@@ -28,7 +28,7 @@
  * A10/A13/A20 (sun4i variant) and everything else (sun6i variant).
  * Both of them are supported.
  *
- * The pin mixing part is SoC specific and only A10/A13/A20/H3/A64 are
+ * The pin mixing part is SoC specific and only A10/A13/A20/H3/A64/H6 are
  * supported at the moment.
  */
 
@@ -70,6 +70,25 @@
 #define SUN6I_TCR_XCH               BIT(31)
 
 /*****************************************************************************/
+/* SUN50I_H6 variant of the SPI controller                                   */
+/*****************************************************************************/
+
+#define SUN50I_H6_SPI0_CCTL         (0x05010000 + 0x24)
+#define SUN50I_H6_SPI0_GCR          (0x05010000 + 0x04)
+#define SUN50I_H6_SPI0_TCR          (0x05010000 + 0x08)
+#define SUN50I_H6_SPI0_FIFO_STA     (0x05010000 + 0x1C)
+#define SUN50I_H6_SPI0_MBC          (0x05010000 + 0x30)
+#define SUN50I_H6_SPI0_MTC          (0x05010000 + 0x34)
+#define SUN50I_H6_SPI0_BCC          (0x05010000 + 0x38)
+#define SUN50I_H6_SPI0_TXD          (0x05010000 + 0x200)
+#define SUN50I_H6_SPI0_RXD          (0x05010000 + 0x300)
+
+#define SUN50I_H6_SPI_GATING_REG    (0x03001000 + 0x96C)
+#define SUN50I_H6_SPI0_RST          BIT(16)
+#define SUN50I_H6_SPI0_GATING_CLK   BIT(0)
+#define SUN50I_H6_CCU_SPI0_CLK      (0x03001000 + 0x940)
+
+/*****************************************************************************/
 
 #define CCM_AHB_GATING0             (0x01C20000 + 0x60)
 #define CCM_SPI0_CLK                (0x01C20000 + 0xA0)
@@ -85,19 +104,29 @@
 
 /*
  * Allwinner A10/A20 SoCs were using pins PC0,PC1,PC2,PC23 for booting
- * from SPI Flash, everything else is using pins PC0,PC1,PC2,PC3.
+ * from SPI Flash, H6 using PC0,PC2,PC3,PC5 , everything else is using
+ * pins PC0,PC1,PC2,PC3.
  */
 static void spi0_pinmux_setup(unsigned int pin_function)
 {
 	unsigned int pin;
 
-	for (pin = SUNXI_GPC(0); pin <= SUNXI_GPC(2); pin++)
-		sunxi_gpio_set_cfgpin(pin, pin_function);
 
-	if (IS_ENABLED(CONFIG_MACH_SUN4I) || IS_ENABLED(CONFIG_MACH_SUN7I))
-		sunxi_gpio_set_cfgpin(SUNXI_GPC(23), pin_function);
-	else
+	if (IS_ENABLED(CONFIG_MACH_SUN50I_H6)) {
+		sunxi_gpio_set_cfgpin(SUNXI_GPC(0), pin_function);
+		sunxi_gpio_set_cfgpin(SUNXI_GPC(2), pin_function);
 		sunxi_gpio_set_cfgpin(SUNXI_GPC(3), pin_function);
+		sunxi_gpio_set_cfgpin(SUNXI_GPC(5), pin_function);
+	} else {
+		for (pin = SUNXI_GPC(0); pin <= SUNXI_GPC(2); pin++)
+			sunxi_gpio_set_cfgpin(pin, pin_function);
+
+		if (IS_ENABLED(CONFIG_MACH_SUN4I) ||
+		    IS_ENABLED(CONFIG_MACH_SUN7I))
+			sunxi_gpio_set_cfgpin(SUNXI_GPC(23), pin_function);
+		else
+			sunxi_gpio_set_cfgpin(SUNXI_GPC(3), pin_function);
+	}
 }
 
 /*
@@ -106,26 +135,43 @@ static void spi0_pinmux_setup(unsigned int pin_function)
 static void spi0_enable_clock(void)
 {
 	/* Deassert SPI0 reset on SUN6I */
-	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I))
+	if (IS_ENABLED(CONFIG_MACH_SUN50I_H6))
+		setbits_le32(SUN50I_H6_SPI_GATING_REG,
+			     SUN50I_H6_SPI0_RST);
+	else if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I))
 		setbits_le32(SUN6I_BUS_SOFT_RST_REG0,
 			     (1 << AHB_RESET_SPI0_SHIFT));
 
 	/* Open the SPI0 gate */
-	setbits_le32(CCM_AHB_GATING0, (1 << AHB_GATE_OFFSET_SPI0));
+	if (IS_ENABLED(CONFIG_MACH_SUN50I_H6))
+		setbits_le32(SUN50I_H6_SPI_GATING_REG,
+			     SUN50I_H6_SPI0_GATING_CLK);
+	else
+		setbits_le32(CCM_AHB_GATING0, (1 << AHB_GATE_OFFSET_SPI0));
 
 	/* Divide by 4 */
-	writel(SPI0_CLK_DIV_BY_4, IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I) ?
-				  SUN6I_SPI0_CCTL : SUN4I_SPI0_CCTL);
-	/* 24MHz from OSC24M */
-	writel((1 << 31), CCM_SPI0_CLK);
+	if (IS_ENABLED(CONFIG_MACH_SUN50I_H6))
+		writel(SPI0_CLK_DIV_BY_4, SUN50I_H6_SPI0_CCTL);
+	else
+		writel(SPI0_CLK_DIV_BY_4, IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I) ?
+					  SUN6I_SPI0_CCTL : SUN4I_SPI0_CCTL);
 
-	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I)) {
+	/* 24MHz from OSC24M */
+	writel((1 << 31), IS_ENABLED(CONFIG_MACH_SUN50I_H6) ?
+				 SUN50I_H6_CCU_SPI0_CLK : CCM_SPI0_CLK);
+
+	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I) ||
+	    IS_ENABLED(CONFIG_MACH_SUN50I_H6)) {
 		/* Enable SPI in the master mode and do a soft reset */
-		setbits_le32(SUN6I_SPI0_GCR, SUN6I_CTL_MASTER |
-					     SUN6I_CTL_ENABLE |
-					     SUN6I_CTL_SRST);
+		setbits_le32(IS_ENABLED(CONFIG_MACH_SUN50I_H6) ?
+			     SUN50I_H6_SPI0_GCR : SUN6I_SPI0_GCR,
+			     SUN6I_CTL_MASTER |
+			     SUN6I_CTL_ENABLE |
+			     SUN6I_CTL_SRST);
+
 		/* Wait for completion */
-		while (readl(SUN6I_SPI0_GCR) & SUN6I_CTL_SRST)
+		while (readl(IS_ENABLED(CONFIG_MACH_SUN50I_H6) ?
+			SUN50I_H6_SPI0_GCR : SUN6I_SPI0_GCR) & SUN6I_CTL_SRST)
 			;
 	} else {
 		/* Enable SPI in the master mode and reset FIFO */
@@ -139,22 +185,33 @@ static void spi0_enable_clock(void)
 static void spi0_disable_clock(void)
 {
 	/* Disable the SPI0 controller */
-	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I))
-		clrbits_le32(SUN6I_SPI0_GCR, SUN6I_CTL_MASTER |
-					     SUN6I_CTL_ENABLE);
+	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I) ||
+	    IS_ENABLED(CONFIG_MACH_SUN50I_H6))
+		clrbits_le32(IS_ENABLED(CONFIG_MACH_SUN50I_H6) ?
+			     SUN50I_H6_SPI0_GCR : SUN6I_SPI0_GCR,
+			     SUN6I_CTL_MASTER |
+			     SUN6I_CTL_ENABLE);
 	else
 		clrbits_le32(SUN4I_SPI0_CTL, SUN4I_CTL_MASTER |
 					     SUN4I_CTL_ENABLE);
 
 	/* Disable the SPI0 clock */
-	writel(0, CCM_SPI0_CLK);
+	writel(0, IS_ENABLED(CONFIG_MACH_SUN50I_H6) ?
+	     SUN50I_H6_CCU_SPI0_CLK : CCM_SPI0_CLK);
 
 	/* Close the SPI0 gate */
-	clrbits_le32(CCM_AHB_GATING0, (1 << AHB_GATE_OFFSET_SPI0));
+	if (IS_ENABLED(CONFIG_MACH_SUN50I_H6))
+		clrbits_le32(SUN50I_H6_SPI_GATING_REG,
+			     SUN50I_H6_SPI0_GATING_CLK);
+	else
+		clrbits_le32(CCM_AHB_GATING0, (1 << AHB_GATE_OFFSET_SPI0));
 
 	/* Assert SPI0 reset on SUN6I */
-	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I))
-		clrbits_le32(SUN6I_BUS_SOFT_RST_REG0,
+	if (IS_ENABLED(CONFIG_MACH_SUN50I_H6))
+		setbits_le32(SUN50I_H6_SPI_GATING_REG,
+			     SUN50I_H6_SPI0_RST);
+	else if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I))
+		setbits_le32(SUN6I_BUS_SOFT_RST_REG0,
 			     (1 << AHB_RESET_SPI0_SHIFT));
 }
 
@@ -162,7 +219,7 @@ static void spi0_init(void)
 {
 	unsigned int pin_function = SUNXI_GPC_SPI0;
 
-	if (IS_ENABLED(CONFIG_MACH_SUN50I))
+	if (IS_ENABLED(CONFIG_MACH_SUN50I) || IS_ENABLED(CONFIG_MACH_SUN50I_H6))
 		pin_function = SUN50I_GPC_SPI0;
 
 	spi0_pinmux_setup(pin_function);
@@ -173,7 +230,9 @@ static void spi0_deinit(void)
 {
 	/* New SoCs can disable pins, older could only set them as input */
 	unsigned int pin_function = SUNXI_GPIO_INPUT;
-	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I))
+
+	if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I) ||
+	    IS_ENABLED(CONFIG_MACH_SUN50I_H6))
 		pin_function = SUNXI_GPIO_DISABLE;
 
 	spi0_disable_clock();
@@ -233,7 +292,17 @@ static void spi0_read_data(void *buf, u32 addr, u32 len)
 		if (chunk_len > SPI_READ_MAX_SIZE)
 			chunk_len = SPI_READ_MAX_SIZE;
 
-		if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I)) {
+		if (IS_ENABLED(CONFIG_MACH_SUN50I_H6)) {
+			sunxi_spi0_read_data(buf8, addr, chunk_len,
+					     SUN50I_H6_SPI0_TCR,
+					     SUN6I_TCR_XCH,
+					     SUN50I_H6_SPI0_FIFO_STA,
+					     SUN50I_H6_SPI0_TXD,
+					     SUN50I_H6_SPI0_RXD,
+					     SUN50I_H6_SPI0_MBC,
+					     SUN50I_H6_SPI0_MTC,
+					     SUN50I_H6_SPI0_BCC);
+		} else if (IS_ENABLED(CONFIG_SUNXI_GEN_SUN6I)) {
 			sunxi_spi0_read_data(buf8, addr, chunk_len,
 					     SUN6I_SPI0_TCR,
 					     SUN6I_TCR_XCH,
